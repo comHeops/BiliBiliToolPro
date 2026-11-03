@@ -61,9 +61,10 @@ Schedule: 2 2 28 * *
 Hook script: bash platforms/daidai/copyshfile.sh
 Whitelist: bili_task_
 File extension: sh
+Full checkout: enabled
 ```
 
-Keep unspecified options at their defaults (including automatic synchronization and task creation). Do **not** restrict the subscription to a subdirectory: the hook needs the Qinglong scripts and `dotnet` mode needs `src/`. The hook copies scripts into `platforms/daidai/DefaultTasks` and removes `platforms/qinglong` from the *synced checkout*. Run the subscription once and check its log for hook execution, script scanning, and task creation.
+Keep unspecified options at their defaults (including automatic synchronization and task creation). **Enable full checkout** (完整检出) and do **not** restrict the subscription to a subdirectory: Daidai turns the whitelist into a sparse checkout, so without full checkout only `bili_task_*.sh` is written to disk — the hook script, `src/` (required by both runtime modes), and `appsettings.json` would be missing. With full checkout enabled, the whitelist still decides which scripts become tasks. The hook copies scripts into `platforms/daidai/DefaultTasks` and removes `platforms/qinglong` from the *synced checkout*. Run the subscription once and check its log for hook execution, script scanning, and task creation.
 
 ### 4. Check the tasks
 

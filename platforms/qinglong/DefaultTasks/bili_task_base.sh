@@ -77,20 +77,67 @@ dir_repo=${dir_repo:-"$QL_DIR/data/repo"}
 if [ ! -d "$dir_repo" ] && [ -d "$QL_DIR/repo" ]; then
   dir_repo="$QL_DIR/repo"
 fi
+# 显式指定仓库目录，适用于任何面板或自定义布局
+if [ -n "${BILI_REPO_DIR:-}" ]; then
+  dir_repo="$BILI_REPO_DIR"
+fi
 dir_shell=$QL_DIR/shell
-touch "$dir_shell/env.sh" && . "$dir_shell/env.sh"
-touch /root/.bashrc && . /root/.bashrc
+# 呆呆面板等非青龙环境可能没有 $QL_DIR/shell，建目录后再 source，避免脚本在这里直接退出
+mkdir -p "$dir_shell" >/dev/null 2>&1 || true
+touch "$dir_shell/env.sh" 2>/dev/null && . "$dir_shell/env.sh" 2>/dev/null || true
+touch /root/.bashrc 2>/dev/null && . /root/.bashrc 2>/dev/null || true
 
 # 目录
 say "青龙repo目录: $dir_repo"
 qinglong_bili_repo="$(echo "$bili_repo" | sed 's/\//_/g')${bili_branch}"
-qinglong_bili_repo_dir="$(find "$dir_repo" -type d \( -iname "$qinglong_bili_repo" -o -iname "${qinglong_bili_repo}_main" \) | head -1)"
+qinglong_bili_repo_dir=""
+
+# 优先按脚本自身位置反推仓库根目录。
+# 青龙会把任务脚本复制到 $QL_DIR/scripts 后执行，这个位置不在仓库内，此分支自然不命中；
+# 呆呆面板等订阅型面板则直接在订阅检出目录里执行脚本
+# （<repo>/platforms/qinglong/DefaultTasks/bili_task_xxx.sh），上跳三级即仓库根目录。
+bili_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd || true)"
+bili_repo_candidate="$(cd "$bili_script_dir/../../.." >/dev/null 2>&1 && pwd || true)"
+if [ -n "$bili_repo_candidate" ] && [ -d "$bili_repo_candidate/platforms/qinglong/DefaultTasks" ]; then
+    qinglong_bili_repo_dir="$bili_repo_candidate"
+fi
+
+# 青龙标准布局：<repo目录>/<owner>_<repo><branch>
+if [ -z "$qinglong_bili_repo_dir" ]; then
+    qinglong_bili_repo_dir="$(find "$dir_repo" -type d \( -iname "$qinglong_bili_repo" -o -iname "${qinglong_bili_repo}_main" \) 2>/dev/null | head -1 || true)"
+fi
+
+# 呆呆面板等订阅面板默认用仓库名（BiliBiliToolPro）或订阅别名作为目录名，
+# 不再拼 <owner>_<repo>。按仓库特征再兜底找一次，目录被改名也能定位。
+if [ -z "$qinglong_bili_repo_dir" ] && [ -d "$dir_repo" ]; then
+    qinglong_bili_repo_dir="$(find "$dir_repo" -maxdepth 4 -type d -iname "bilibilitoolpro" 2>/dev/null | head -1 || true)"
+fi
+if [ -z "$qinglong_bili_repo_dir" ] && [ -d "$dir_repo" ]; then
+    bili_solution_file="$(find "$dir_repo" -maxdepth 5 -type f -name "Ray.BiliBiliTool.sln" 2>/dev/null | head -1 || true)"
+    if [ -n "$bili_solution_file" ]; then
+        qinglong_bili_repo_dir="$(dirname "$bili_solution_file")"
+    fi
+fi
 say "bili仓库目录: $qinglong_bili_repo_dir"
 
 if [ -z "$qinglong_bili_repo_dir" ]; then
     say_err "未找到 bili 仓库目录"
     say_err "查找目标：$qinglong_bili_repo"
-    say_err "请确认已在青龙中拉取仓库 ${bili_repo}${bili_branch}，或通过环境变量 BILI_REPO / BILI_BRANCH 覆盖默认值"
+    say_err "已搜索目录：$dir_repo"
+    if [ -d "/app/Dumb-Panel" ] || [ -n "${QL_REPO_PATH:-}" ]; then
+        say_err "检测到呆呆面板：请确认订阅已拉取成功，并在订阅设置中开启「完整检出（Full Checkout）」"
+        say_err "也可以把订阅别名 / 保存目录设为 $qinglong_bili_repo 后重新拉取"
+    fi
+    say_err "请确认已拉取仓库 ${bili_repo}${bili_branch}，或通过环境变量 BILI_REPO / BILI_BRANCH / BILI_REPO_DIR 覆盖默认值"
+    exit 1
+fi
+
+# dotnet 模式要编译 src，bilitool 模式也要用 src 下的 appsettings.json；
+# 呆呆面板等面板的白名单会触发 sparse checkout，只落盘 bili_task_*.sh，这里提前给出明确提示。
+if [ ! -d "$qinglong_bili_repo_dir/src/Ray.BiliBiliTool.Console" ]; then
+    say_err "已找到 bili 仓库目录：$qinglong_bili_repo_dir"
+    say_err "但缺少 src/Ray.BiliBiliTool.Console，订阅可能只稀疏检出了 bili_task_*.sh"
+    say_err "请在该订阅中开启「完整检出（Full Checkout）」后重新拉取"
     exit 1
 fi
 
@@ -606,10 +653,16 @@ run_task() {
 
     local target_code=$1
 
-    export Ray_PlatformType=QingLong
+    # 呆呆面板（Daidai Panel）也复用这份青龙脚本时，必须切到 DaiDai 平台，
+    # 否则登录任务会去调用青龙的 Open API 写 Cookie，在呆呆面板上必然失败。
+    if [ -n "${DAIDAI_PYTHON_VERSION:-}" ] || [ -n "${QL_REPO_PATH:-}" ] || [ -d "/app/Dumb-Panel" ]; then
+        export Ray_PlatformType=DaiDai
+    else
+        export Ray_PlatformType=QingLong
+    fi
     export Ray_RunTasks=$target_code
 
-    cd $qinglong_bili_repo_dir/src/Ray.BiliBiliTool.Console
+    cd "$qinglong_bili_repo_dir/src/Ray.BiliBiliTool.Console"
 
     if [ "$prefer_mode" == "dotnet" ]; then
         dotnet run --ENVIRONMENT=Production
